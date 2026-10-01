@@ -1,35 +1,60 @@
 import { NextResponse } from "next/server";
+import { logConnectorCall } from "@/lib/logger";
 
 export async function POST(request: Request) {
+  const startedAt = Date.now();
+  let body: any = null;
+
+  function respond(responseBody: unknown, statusCode = 200) {
+    logConnectorCall({
+      timestamp: new Date().toISOString(),
+      connector: "delhivery",
+      endpoint: "/validate",
+      method: "POST",
+      request: body,
+      response: responseBody,
+      status_code: statusCode,
+      latency_ms: Date.now() - startedAt,
+    });
+
+    return NextResponse.json(responseBody, {
+      status: statusCode,
+    });
+  }
+
   try {
-    const body = await request.json();
+    body = await request.json();
 
     const { address, req_id } = body;
 
+    // Missing address
     if (!address) {
-      return NextResponse.json(
+      return respond(
         {
           error: "No address provided",
           request_id: crypto.randomUUID(),
         },
-        { status: 400 }
+        400
       );
     }
 
-    // Deterministic mock cases for testing
+    // Simulated timeout
     if (req_id === "VALIDATE-TIMEOUT") {
-      return NextResponse.json(
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+
+      return respond(
         {
           error: "Request timed out",
           detail: "OpenSearch search timed out (10.0s budget)",
           request_id: crypto.randomUUID(),
         },
-        { status: 504 }
+        504
       );
     }
 
+    // Invalid / junk address
     if (req_id === "VALIDATE-BAD") {
-      return NextResponse.json({
+      return respond({
         quality: "not_ok",
         granularity_level: "NONE",
         reason: "invalid_or_junk",
@@ -40,8 +65,9 @@ export async function POST(request: Request) {
       });
     }
 
+    // Incomplete address
     if (req_id === "VALIDATE-INCOMPLETE") {
-      return NextResponse.json({
+      return respond({
         quality: "not_ok",
         granularity_level: "LOCALITY",
         reason: "incomplete",
@@ -52,8 +78,8 @@ export async function POST(request: Request) {
       });
     }
 
-    // Default successful mock
-    return NextResponse.json({
+    // Normal successful response
+    return respond({
       quality: "ok",
       granularity_level: "PREMISE",
       reason: "valid",
@@ -64,12 +90,12 @@ export async function POST(request: Request) {
       req_id: req_id ?? null,
     });
   } catch {
-    return NextResponse.json(
+    return respond(
       {
         error: "Internal Server Error",
         request_id: crypto.randomUUID(),
       },
-      { status: 500 }
+      500
     );
   }
 }
