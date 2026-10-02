@@ -21,9 +21,7 @@ export async function POST(request: Request) {
       latency_ms: Date.now() - startedAt,
     });
 
-    return NextResponse.json(responseBody, {
-      status: statusCode,
-    });
+    return NextResponse.json(responseBody, { status: statusCode });
   }
 
   try {
@@ -81,36 +79,28 @@ export async function POST(request: Request) {
     }
 
     const updatedState = {
-      ...state,
+      hold_id: state.hold_id,
       status: "RELEASED" as const,
-      updated_at: new Date().toISOString(),
       signing_reference: signing_reference.trim(),
     };
 
     return respond({
       success: true,
       provider: "Pine Labs mock rail",
-      hold_id: updatedState.hold_id,
-      previous_status: state.status,
-      status: updatedState.status,
-      amount_inr: updatedState.amount_inr,
-      currency: updatedState.currency,
-      property_id: updatedState.property_id,
-      property_name: updatedState.property_name,
+      hold_id: state.hold_id,
+      previous_status: "HELD",
+      status: "RELEASED",
       funds_released_to_owner: true,
       signing_reference: updatedState.signing_reference,
-      released_at: updatedState.updated_at,
+      released_at: new Date().toISOString(),
       hold_state_token: encodeHoldState(updatedState),
     });
-  } catch (error) {
+  } catch {
     return respond(
       {
         success: false,
         code: "INVALID_HOLD_STATE",
-        error:
-          error instanceof Error
-            ? error.message
-            : "Invalid hold state",
+        error: "INVALID_HOLD_STATE",
       },
       400
     );

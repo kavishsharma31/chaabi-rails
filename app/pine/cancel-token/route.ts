@@ -21,9 +21,7 @@ export async function POST(request: Request) {
       latency_ms: Date.now() - startedAt,
     });
 
-    return NextResponse.json(responseBody, {
-      status: statusCode,
-    });
+    return NextResponse.json(responseBody, { status: statusCode });
   }
 
   try {
@@ -49,8 +47,7 @@ export async function POST(request: Request) {
         {
           success: false,
           code: "ALREADY_RELEASED",
-          error:
-            "Released funds cannot be cancelled through the hold flow",
+          error: "Released funds cannot be cancelled",
           hold_id: state.hold_id,
         },
         409
@@ -58,16 +55,13 @@ export async function POST(request: Request) {
     }
 
     if (state.status === "CANCELLED") {
-      return respond(
-        {
-          success: true,
-          hold_id: state.hold_id,
-          status: "CANCELLED",
-          message: "Token hold was already cancelled",
-          hold_state_token,
-        },
-        200
-      );
+      return respond({
+        success: true,
+        hold_id: state.hold_id,
+        status: "CANCELLED",
+        message: "Token hold was already cancelled",
+        hold_state_token,
+      });
     }
 
     if (typeof reason !== "string" || reason.trim().length === 0) {
@@ -82,37 +76,29 @@ export async function POST(request: Request) {
     }
 
     const updatedState = {
-      ...state,
+      hold_id: state.hold_id,
       status: "CANCELLED" as const,
-      updated_at: new Date().toISOString(),
       cancellation_reason: reason.trim(),
     };
 
     return respond({
       success: true,
       provider: "Pine Labs mock rail",
-      hold_id: updatedState.hold_id,
-      previous_status: state.status,
-      status: updatedState.status,
-      amount_inr: updatedState.amount_inr,
-      currency: updatedState.currency,
-      property_id: updatedState.property_id,
-      property_name: updatedState.property_name,
+      hold_id: state.hold_id,
+      previous_status: "HELD",
+      status: "CANCELLED",
       funds_released_to_owner: false,
       funds_returned_to_tenant: true,
       cancellation_reason: updatedState.cancellation_reason,
-      cancelled_at: updatedState.updated_at,
+      cancelled_at: new Date().toISOString(),
       hold_state_token: encodeHoldState(updatedState),
     });
-  } catch (error) {
+  } catch {
     return respond(
       {
         success: false,
         code: "INVALID_HOLD_STATE",
-        error:
-          error instanceof Error
-            ? error.message
-            : "Invalid hold state",
+        error: "INVALID_HOLD_STATE",
       },
       400
     );

@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
 import { logConnectorCall } from "@/lib/logger";
-import {
-  encodeHoldState,
-  PineHoldState,
-} from "@/lib/pineMock";
+import { encodeHoldState } from "@/lib/pineMock";
 
 export async function POST(request: Request) {
   const startedAt = Date.now();
@@ -21,9 +18,7 @@ export async function POST(request: Request) {
       latency_ms: Date.now() - startedAt,
     });
 
-    return NextResponse.json(responseBody, {
-      status: statusCode,
-    });
+    return NextResponse.json(responseBody, { status: statusCode });
   }
 
   try {
@@ -81,34 +76,28 @@ export async function POST(request: Request) {
       );
     }
 
-    const now = new Date().toISOString();
+    const hold_id = `HOLD-${crypto.randomUUID()}`;
+    const created_at = new Date().toISOString();
 
-    const state: PineHoldState = {
-      hold_id: `HOLD-${crypto.randomUUID()}`,
-      property_id,
-      property_name,
-      tenant_name,
-      amount_inr,
-      currency: "INR",
+    const hold_state_token = encodeHoldState({
+      hold_id,
       status: "HELD",
-      created_at: now,
-      updated_at: now,
-      approval_text: approval_text.trim(),
-    };
+    });
 
     return respond({
       success: true,
       provider: "Pine Labs mock rail",
       capability: "token_hold",
-      hold_id: state.hold_id,
-      status: state.status,
-      amount_inr: state.amount_inr,
-      currency: state.currency,
-      property_id: state.property_id,
-      property_name: state.property_name,
+      hold_id,
+      status: "HELD",
+      amount_inr,
+      currency: "INR",
+      property_id,
+      property_name,
+      tenant_name,
       funds_released_to_owner: false,
-      created_at: state.created_at,
-      hold_state_token: encodeHoldState(state),
+      created_at,
+      hold_state_token,
     });
   } catch {
     return respond(
