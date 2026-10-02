@@ -1,5 +1,15 @@
 import { NextResponse } from "next/server";
 
+function canonicalizeAddress(address: string) {
+  const cleaned = address.trim().replace(/\s+/g, " ");
+
+  if (/ridgewood/i.test(cleaned)) {
+    return "DLF Ridgewood Estate, DLF Phase IV, Gurugram, Haryana 122009";
+  }
+
+  return cleaned.replace(/\bGurgaon\b/gi, "Gurugram");
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -48,13 +58,14 @@ export async function POST(request: Request) {
       );
     }
 
+    const formattedAddress = canonicalizeAddress(address);
+
     if (req_id === "VERIFY-NOT-FOUND") {
       return NextResponse.json({
         quality: "ok",
         granularity_level: "PREMISE",
         reason: "valid",
-        formatted_address:
-          "H-36, 1st Floor, Residency Greens, Sector 46, Gurugram, Haryana, 122003",
+        formatted_address: formattedAddress,
         corrections: "",
         is_verified: false,
         last_visited_date: null,
@@ -70,7 +81,7 @@ export async function POST(request: Request) {
         quality: "not_ok",
         granularity_level: "LOCALITY",
         reason: "incomplete",
-        formatted_address: "Sector 46, Gurugram, Haryana",
+        formatted_address: "Gurugram, Haryana",
         corrections: "Premise details missing",
         is_verified: false,
         last_visited_date: null,
@@ -85,14 +96,12 @@ export async function POST(request: Request) {
       quality: "ok",
       granularity_level: "PREMISE",
       reason: "valid",
-      formatted_address:
-        "H-36, 1st Floor, Residency Greens, Sector 46, Gurugram, Haryana, 122003",
-      corrections:
-        "<h36|H-36>, <1st floor|1st Floor>, <residency greens|Residency Greens>, Sector 46, <gurgaon|Gurugram>, <|Haryana, 122003>",
+      formatted_address: formattedAddress,
+      corrections: "",
       is_verified: true,
       last_visited_date: "2026-05-14",
       verification_reasoning:
-        "Same premise, building, sector and pincode matched delivery history.",
+        "Same premise and locality matched recent delivery history.",
       request_id: crypto.randomUUID(),
       req_id: req_id ?? null,
     });

@@ -1,6 +1,16 @@
 import { NextResponse } from "next/server";
 import { logConnectorCall } from "@/lib/logger";
 
+function canonicalizeAddress(address: string) {
+  const cleaned = address.trim().replace(/\s+/g, " ");
+
+  if (/ridgewood/i.test(cleaned)) {
+    return "DLF Ridgewood Estate, DLF Phase IV, Gurugram, Haryana 122009";
+  }
+
+  return cleaned.replace(/\bGurgaon\b/gi, "Gurugram");
+}
+
 export async function POST(request: Request) {
   const startedAt = Date.now();
   let body: any = null;
@@ -27,7 +37,6 @@ export async function POST(request: Request) {
 
     const { address, req_id } = body;
 
-    // Missing address
     if (!address) {
       return respond(
         {
@@ -38,7 +47,6 @@ export async function POST(request: Request) {
       );
     }
 
-    // Simulated timeout
     if (req_id === "VALIDATE-TIMEOUT") {
       await new Promise((resolve) => setTimeout(resolve, 4000));
 
@@ -52,7 +60,6 @@ export async function POST(request: Request) {
       );
     }
 
-    // Invalid / junk address
     if (req_id === "VALIDATE-BAD") {
       return respond({
         quality: "not_ok",
@@ -65,7 +72,6 @@ export async function POST(request: Request) {
       });
     }
 
-    // Incomplete address
     if (req_id === "VALIDATE-INCOMPLETE") {
       return respond({
         quality: "not_ok",
@@ -78,13 +84,11 @@ export async function POST(request: Request) {
       });
     }
 
-    // Normal successful response
     return respond({
       quality: "ok",
       granularity_level: "PREMISE",
       reason: "valid",
-      formatted_address:
-        "H-36, 1st Floor, Residency Greens, Sector 46, Gurugram, Haryana",
+      formatted_address: canonicalizeAddress(address),
       corrections: "",
       request_id: crypto.randomUUID(),
       req_id: req_id ?? null,

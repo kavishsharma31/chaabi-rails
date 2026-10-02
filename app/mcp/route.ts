@@ -8,7 +8,7 @@ const handler = createMcpHandler(
   ({ requestInfo }) => {
     const server = new McpServer({
       name: "chaabi-integrations",
-      version: "1.1.0",
+      version: "1.2.0",
     });
 
     const origin = requestInfo
@@ -59,29 +59,17 @@ const handler = createMcpHandler(
       }
     }
 
-    // =========================================================
     // GNANI
-    // =========================================================
 
     server.registerTool(
       "start_call",
       {
         description:
-          "Trigger a real outbound Gnani voice call to a rental broker. Returns a tracking_id that must be preserved and later passed to call_result.",
+          "Trigger a real outbound Gnani voice call to a rental broker. Returns a tracking_id that must later be passed to call_result.",
         inputSchema: z.object({
-          phone: z
-            .string()
-            .min(10)
-            .describe("Broker phone number without the country code"),
-          name: z
-            .string()
-            .optional()
-            .describe("Human-readable broker or call label"),
-          country_code: z
-            .string()
-            .optional()
-            .default("+91")
-            .describe("Phone country code, normally +91"),
+          phone: z.string().min(10),
+          name: z.string().optional(),
+          country_code: z.string().optional().default("+91"),
         }),
       },
       async ({ phone, name, country_code }) => {
@@ -97,12 +85,9 @@ const handler = createMcpHandler(
       "call_result",
       {
         description:
-          "Retrieve the status and transcript of a Gnani broker call using the tracking_id returned by start_call. If found=false or complete=false, retry this tool rather than creating a duplicate call.",
+          "Retrieve the status and transcript of a Gnani broker call using its tracking_id.",
         inputSchema: z.object({
-          tracking_id: z
-            .string()
-            .min(1)
-            .describe("Tracking ID returned by start_call"),
+          tracking_id: z.string().min(1),
         }),
       },
       async ({ tracking_id }) => {
@@ -112,49 +97,36 @@ const handler = createMcpHandler(
       }
     );
 
-    // =========================================================
-    // DELHIVERY MOCK RAIL
-    // =========================================================
+    // DELHIVERY
 
     server.registerTool(
-  "validate_address",
-  {
-    description:
-      "Validate and standardize a rental property address using the Delhivery mock rail. Use this before relying on an address or attempting to identify duplicate property listings.",
-    inputSchema: z.object({
-      address: z
-        .string()
-        .min(1)
-        .describe("Rental property address to validate"),
-    }),
-  },
-  async ({ address }) => {
-    return forwardJson("/validate", {
-      address,
-    });
-  }
-);
+      "validate_address",
+      {
+        description:
+          "Validate and standardize a rental property address using the Delhivery mock rail.",
+        inputSchema: z.object({
+          address: z.string().min(1),
+        }),
+      },
+      async ({ address }) => {
+        return forwardJson("/validate", {
+          address,
+        });
+      }
+    );
 
     server.registerTool(
       "geocode_address",
       {
         description:
-          "Geocode a rental property address using the Delhivery mock rail. Returns latitude, longitude and error_radius. Use only after obtaining a sufficiently specific address.",
+          "Geocode a validated rental property address using the Delhivery mock rail. Returns latitude, longitude and error radius.",
         inputSchema: z.object({
-          address: z
-            .string()
-            .min(1)
-            .describe("Rental property address to geocode"),
-          req_id: z
-            .string()
-            .optional()
-            .describe("Property or request identifier used for tracing"),
+          address: z.string().min(1),
         }),
       },
-      async ({ address, req_id }) => {
+      async ({ address }) => {
         return forwardJson("/geocode", {
           address,
-          ...(req_id ? { req_id } : {}),
         });
       }
     );
@@ -163,30 +135,15 @@ const handler = createMcpHandler(
       "verify_delivery_history",
       {
         description:
-          "Check whether Delhivery has recent delivery history for a property address. This is only a weak supporting signal that the address has been serviced; is_verified=false must never by itself be used to call a property fake or reject it.",
+          "Check recent Delhivery delivery history for a property address. This is a weak supporting signal only and must not by itself determine whether a property is genuine.",
         inputSchema: z.object({
-          address: z
-            .string()
-            .min(1)
-            .describe("Rental property address to verify"),
-          months: z
-            .number()
-            .int()
-            .positive()
-            .optional()
-            .default(12)
-            .describe("Number of months of delivery history to check"),
-          req_id: z
-            .string()
-            .optional()
-            .describe("Property or request identifier used for tracing"),
+          address: z.string().min(1),
         }),
       },
-      async ({ address, months, req_id }) => {
+      async ({ address }) => {
         return forwardJson("/verify", {
           address,
-          months: months ?? 12,
-          ...(req_id ? { req_id } : {}),
+          months: 12,
         });
       }
     );
@@ -195,42 +152,21 @@ const handler = createMcpHandler(
       "get_travel_matrix",
       {
         description:
-          "Calculate Delhivery mock travel distance and time from one or more source coordinates to one or more target coordinates. Useful for checking tenant commute or comparing properties.",
+          "Calculate travel distance and time between source and target coordinates using the Delhivery mock rail.",
         inputSchema: z.object({
           sources: z
             .array(z.tuple([z.number(), z.number()]))
-            .min(1)
-            .describe(
-              "Source coordinates as arrays of [latitude, longitude]"
-            ),
+            .min(1),
           targets: z
             .array(z.tuple([z.number(), z.number()]))
-            .min(1)
-            .describe(
-              "Target coordinates as arrays of [latitude, longitude]"
-            ),
-          travel_mode: z
-            .enum(["auto", "motorcycle", "truck", "pedestrian"])
-            .optional()
-            .default("auto")
-            .describe("Travel mode"),
-          route_modifiers: z
-            .record(z.string(), z.any())
-            .optional()
-            .describe("Optional Delhivery routing modifiers"),
+            .min(1),
         }),
       },
-      async ({
-        sources,
-        targets,
-        travel_mode,
-        route_modifiers,
-      }) => {
+      async ({ sources, targets }) => {
         return forwardJson("/matrix", {
           sources,
           targets,
-          travel_mode: travel_mode ?? "auto",
-          ...(route_modifiers ? { route_modifiers } : {}),
+          travel_mode: "auto",
         });
       }
     );
@@ -239,54 +175,19 @@ const handler = createMcpHandler(
       "get_route",
       {
         description:
-          "Generate a Delhivery mock route through ordered geographic waypoints. Use when Chaabi needs route distance, duration, legs or waypoint sequencing for rental visits.",
+          "Generate a route through two or more ordered geographic coordinates using the Delhivery mock rail.",
         inputSchema: z.object({
           geo_coords: z
             .array(z.tuple([z.number(), z.number()]))
-            .min(2)
-            .describe(
-              "Ordered route waypoints as arrays of [latitude, longitude]"
-            ),
-          travel_mode: z
-            .enum(["auto", "motorcycle", "truck", "pedestrian"])
-            .optional()
-            .default("auto")
-            .describe("Travel mode"),
-          alternate_routes: z
-            .boolean()
-            .optional()
-            .default(false)
-            .describe("Whether alternate routes should be returned"),
-          traffic_aware: z
-            .boolean()
-            .optional()
-            .default(true)
-            .describe("Whether travel time should account for traffic"),
-          departure_time: z
-            .string()
-            .optional()
-            .describe("Optional departure time"),
-          route_modifiers: z
-            .record(z.string(), z.any())
-            .optional()
-            .describe("Optional Delhivery routing modifiers"),
+            .min(2),
         }),
       },
-      async ({
-        geo_coords,
-        travel_mode,
-        alternate_routes,
-        traffic_aware,
-        departure_time,
-        route_modifiers,
-      }) => {
+      async ({ geo_coords }) => {
         return forwardJson("/route", {
           geo_coords,
-          travel_mode: travel_mode ?? "auto",
-          alternate_routes: alternate_routes ?? false,
-          traffic_aware: traffic_aware ?? true,
-          ...(departure_time ? { departure_time } : {}),
-          ...(route_modifiers ? { route_modifiers } : {}),
+          travel_mode: "auto",
+          alternate_routes: false,
+          traffic_aware: true,
         });
       }
     );
