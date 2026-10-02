@@ -3,12 +3,13 @@ import * as z from "zod/v4";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 const handler = createMcpHandler(
   ({ requestInfo }) => {
     const server = new McpServer({
       name: "chaabi-integrations",
-      version: "1.3.0",
+      version: "1.4.0",
     });
 
     const origin = requestInfo
@@ -290,6 +291,31 @@ const handler = createMcpHandler(
         return forwardJson("/pine/cancel-token", {
           hold_state_token,
           reason,
+        });
+      }
+    );
+
+    // =========================================================
+    // CHAABI PERSISTENT STATE WORKER
+    // =========================================================
+
+    server.registerTool(
+      "run_state_worker",
+      {
+        description:
+          "Read or update Chaabi's persistent rental state through the connected Google Sheets state worker. Use this when an action depends on previous rental activity, when state must persist across conversations, or after a material action or decision needs to be recorded. Give the worker a precise task describing what to read, append, or update. Never claim a state change succeeded unless this tool confirms it.",
+        inputSchema: z.object({
+          task: z
+            .string()
+            .min(1)
+            .describe(
+              "Precise state operation to perform, including what entity or event to read, append, or update."
+            ),
+        }),
+      },
+      async ({ task }) => {
+        return forwardJson("/agenticorg/state-worker", {
+          task,
         });
       }
     );
