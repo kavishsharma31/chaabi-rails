@@ -8,7 +8,7 @@ const handler = createMcpHandler(
   ({ requestInfo }) => {
     const server = new McpServer({
       name: "chaabi-integrations",
-      version: "1.2.0",
+      version: "1.3.0",
     });
 
     const origin = requestInfo
@@ -59,7 +59,9 @@ const handler = createMcpHandler(
       }
     }
 
+    // =========================================================
     // GNANI
+    // =========================================================
 
     server.registerTool(
       "start_call",
@@ -97,7 +99,9 @@ const handler = createMcpHandler(
       }
     );
 
-    // DELHIVERY
+    // =========================================================
+    // DELHIVERY MOCK RAIL
+    // =========================================================
 
     server.registerTool(
       "validate_address",
@@ -135,7 +139,7 @@ const handler = createMcpHandler(
       "verify_delivery_history",
       {
         description:
-          "Check recent Delhivery delivery history for a property address. This is a weak supporting signal only and must not by itself determine whether a property is genuine.",
+          "Check recent Delhivery delivery history for a property address. This is only a weak supporting signal and must not by itself determine whether a property is genuine.",
         inputSchema: z.object({
           address: z.string().min(1),
         }),
@@ -188,6 +192,104 @@ const handler = createMcpHandler(
           travel_mode: "auto",
           alternate_routes: false,
           traffic_aware: true,
+        });
+      }
+    );
+
+    // =========================================================
+    // PINE LABS MOCK RAIL
+    // =========================================================
+
+    server.registerTool(
+      "create_token_hold",
+      {
+        description:
+          "Create a Pine Labs mock token hold for a rental property. Use only after the tenant has explicitly approved the exact token amount. The funds are held and are NOT released to the owner.",
+        inputSchema: z.object({
+          property_id: z.string().min(1),
+          property_name: z.string().min(1),
+          tenant_name: z.string().min(1),
+          amount_inr: z.number().positive(),
+          tenant_approved: z.boolean(),
+          approval_text: z.string().min(1),
+        }),
+      },
+      async ({
+        property_id,
+        property_name,
+        tenant_name,
+        amount_inr,
+        tenant_approved,
+        approval_text,
+      }) => {
+        return forwardJson("/pine/create-token-hold", {
+          property_id,
+          property_name,
+          tenant_name,
+          amount_inr,
+          tenant_approved,
+          approval_text,
+        });
+      }
+    );
+
+    server.registerTool(
+      "get_token_hold_status",
+      {
+        description:
+          "Check the current state of a Pine Labs mock token hold. Pass the hold_state_token returned by the previous Pine tool.",
+        inputSchema: z.object({
+          hold_state_token: z.string().min(1),
+        }),
+      },
+      async ({ hold_state_token }) => {
+        return forwardJson("/pine/token-hold-status", {
+          hold_state_token,
+        });
+      }
+    );
+
+    server.registerTool(
+      "release_token_on_signing",
+      {
+        description:
+          "Release a held rental token to the owner only after both tenant and owner signatures are confirmed. Never use this tool without evidence of both signatures.",
+        inputSchema: z.object({
+          hold_state_token: z.string().min(1),
+          tenant_signed: z.boolean(),
+          owner_signed: z.boolean(),
+          signing_reference: z.string().min(1),
+        }),
+      },
+      async ({
+        hold_state_token,
+        tenant_signed,
+        owner_signed,
+        signing_reference,
+      }) => {
+        return forwardJson("/pine/release-token", {
+          hold_state_token,
+          tenant_signed,
+          owner_signed,
+          signing_reference,
+        });
+      }
+    );
+
+    server.registerTool(
+      "cancel_token_hold",
+      {
+        description:
+          "Cancel a held rental token before it has been released to the owner. Use when the rental deal falls through before signing. Released funds cannot be cancelled through this tool.",
+        inputSchema: z.object({
+          hold_state_token: z.string().min(1),
+          reason: z.string().min(1),
+        }),
+      },
+      async ({ hold_state_token, reason }) => {
+        return forwardJson("/pine/cancel-token", {
+          hold_state_token,
+          reason,
         });
       }
     );
