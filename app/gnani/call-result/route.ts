@@ -42,15 +42,15 @@ export async function POST(request: Request) {
 
     // Step 1: Find the matching conversation
     const now = new Date();
-    const sixHoursAgo = new Date(
-      now.getTime() - 6 * 60 * 60 * 1000
+    const sevenDaysAgo = new Date(
+      now.getTime() - 7 * 24 * 60 * 60 * 1000
     );
 
     const listBody = {
       page_no: 1,
       page_size: 50,
       filter: {
-        start_date: sixHoursAgo.toISOString(),
+        start_date: sevenDaysAgo.toISOString(),
         end_date: now.toISOString(),
       },
     };
