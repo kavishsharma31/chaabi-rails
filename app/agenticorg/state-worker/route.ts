@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 
+export const maxDuration = 60;
+
 const AGENTICORG_BASE_URL =
   "https://agenticorg.hackathon.pinelabs.com";
 
