@@ -117,28 +117,23 @@ const handler = createMcpHandler(
     // =========================================================
 
     server.registerTool(
-      "validate_address",
-      {
-        description:
-          "Validate and standardize a rental property address using the Delhivery mock rail. Use this before relying on an address or attempting to identify duplicate property listings. Returns address quality, granularity, formatted address, corrections and reason.",
-        inputSchema: z.object({
-          address: z
-            .string()
-            .min(1)
-            .describe("Rental property address to validate"),
-          req_id: z
-            .string()
-            .optional()
-            .describe("Property or request identifier used for tracing"),
-        }),
-      },
-      async ({ address, req_id }) => {
-        return forwardJson("/validate", {
-          address,
-          ...(req_id ? { req_id } : {}),
-        });
-      }
-    );
+  "validate_address",
+  {
+    description:
+      "Validate and standardize a rental property address using the Delhivery mock rail. Use this before relying on an address or attempting to identify duplicate property listings.",
+    inputSchema: z.object({
+      address: z
+        .string()
+        .min(1)
+        .describe("Rental property address to validate"),
+    }),
+  },
+  async ({ address }) => {
+    return forwardJson("/validate", {
+      address,
+    });
+  }
+);
 
     server.registerTool(
       "geocode_address",
