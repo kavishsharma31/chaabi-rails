@@ -1,12 +1,139 @@
 import { NextResponse } from "next/server";
 import { logConnectorCall } from "@/lib/logger";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 60;
+
 const BOT_ID = "8721446034a74eb89dc8caef3e5fe454";
 
 function authHeader(bearer: string) {
   return bearer.startsWith("Bearer ")
     ? bearer
     : `Bearer ${bearer}`;
+}
+
+function isUsefulValue(value: any) {
+  if (value === undefined || value === null) {
+    return false;
+  }
+
+  if (typeof value === "string") {
+    const cleaned = value.trim();
+
+    if (
+      cleaned === "" ||
+      cleaned.toUpperCase() === "NA" ||
+      cleaned.toUpperCase() === "N/A" ||
+      cleaned.toLowerCase() === "null"
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function parseMaybeJson(value: any) {
+  if (!isUsefulValue(value)) {
+    return null;
+  }
+
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmed = value.trim();
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
+function firstUseful(...values: any[]) {
+  for (const value of values) {
+    if (isUsefulValue(value)) {
+      return parseMaybeJson(value);
+    }
+  }
+
+  return null;
+}
+
+function findInterestingFields(
+  value: any,
+  path = "",
+  depth = 0
+): Record<string, any> {
+  if (
+    value === null ||
+    value === undefined ||
+    depth > 6
+  ) {
+    return {};
+  }
+
+  if (Array.isArray(value)) {
+    const output: Record<string, any> = {};
+
+    value.forEach((item, index) => {
+      Object.assign(
+        output,
+        findInterestingFields(
+          item,
+          `${path}[${index}]`,
+          depth + 1
+        )
+      );
+    });
+
+    return output;
+  }
+
+  if (typeof value !== "object") {
+    return {};
+  }
+
+  const output: Record<string, any> = {};
+
+  for (const [key, child] of Object.entries(value)) {
+    const childPath = path
+      ? `${path}.${key}`
+      : key;
+
+    const normalizedKey = key
+      .replace(/[^a-zA-Z0-9]/g, "")
+      .toLowerCase();
+
+    const interesting =
+      normalizedKey.includes("extraction") ||
+      normalizedKey.includes("disposition") ||
+      normalizedKey.includes("stagecode") ||
+      normalizedKey.includes("datafield") ||
+      normalizedKey.includes("postcall");
+
+    if (interesting) {
+      output[childPath] = child;
+    }
+
+    if (
+      child &&
+      typeof child === "object"
+    ) {
+      Object.assign(
+        output,
+        findInterestingFields(
+          child,
+          childPath,
+          depth + 1
+        )
+      );
+    }
+  }
+
+  return output;
 }
 
 export async function POST(request: Request) {
@@ -40,7 +167,10 @@ export async function POST(request: Request) {
 
     const authorization = authHeader(bearer);
 
-    // Step 1: Find the matching conversation
+    // =========================================================
+    // STEP 1: FIND MATCHING CONVERSATION
+    // =========================================================
+
     const now = new Date();
     const sevenDaysAgo = new Date(
       now.getTime() - 7 * 24 * 60 * 60 * 1000
@@ -76,7 +206,9 @@ export async function POST(request: Request) {
     try {
       listData = JSON.parse(listText);
     } catch {
-      listData = { raw_response: listText };
+      listData = {
+        raw_response: listText,
+      };
     }
 
     if (!listResponse.ok) {
@@ -111,7 +243,10 @@ export async function POST(request: Request) {
 
     const conversationId = matchingCall.conversationId;
 
-    // Step 2: Get full conversation details
+    // =========================================================
+    // STEP 2: GET FULL CONVERSATION DETAILS
+    // =========================================================
+
     const statsResponse = await fetch(
       `https://api.inya.ai/analytics/conversation_stats_v2/${conversationId}`,
       {
@@ -131,7 +266,9 @@ export async function POST(request: Request) {
     try {
       statsData = JSON.parse(statsText);
     } catch {
-      statsData = { raw_response: statsText };
+      statsData = {
+        raw_response: statsText,
+      };
     }
 
     logConnectorCall({
@@ -161,7 +298,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const conversation = statsData?.response?.data?.[0];
+    const conversation =
+      statsData?.response?.data?.[0];
 
     if (!conversation) {
       return NextResponse.json({
@@ -170,26 +308,92 @@ export async function POST(request: Request) {
         complete: false,
         tracking_id: trackingId,
         conversation_id: conversationId,
-        message: "Conversation exists but details are not available yet",
+        message:
+          "Conversation exists but details are not available yet",
       });
     }
+
+    // =========================================================
+    // EXTRACTION / DISPOSITION DISCOVERY
+    // =========================================================
+
+    const postCallExtraction = firstUseful(
+      conversation.postCallExtraction,
+      conversation.post_call_extraction,
+      conversation.postCallExtractionV2,
+      conversation.post_call_extraction_v2,
+      conversation.postCallDataExtraction,
+      conversation.post_call_data_extraction,
+      conversation.extraction,
+      conversation.extractionResult,
+      conversation.extraction_result,
+      conversation.dataFields,
+      conversation.data_fields,
+      conversation.dispositionResult?.postCallExtraction,
+      conversation.dispositionResult?.post_call_extraction,
+      conversation.dispositionResult?.postCallExtractionV2,
+      conversation.dispositionResult?.post_call_extraction_v2,
+      conversation.disposition_result?.postCallExtraction,
+      conversation.disposition_result?.post_call_extraction,
+      conversation.disposition_result?.postCallExtractionV2,
+      conversation.disposition_result?.post_call_extraction_v2
+    );
+
+    const dispositionResult = firstUseful(
+      conversation.dispositionResult,
+      conversation.disposition_result
+    );
+
+    const stageCode = firstUseful(
+      conversation.STAGE_CODE,
+      conversation.stageCode,
+      conversation.stage_code
+    );
+
+    const extractionDebug =
+      findInterestingFields(conversation);
 
     return NextResponse.json({
       success: true,
       found: true,
       complete: Boolean(conversation.endTime),
+
       tracking_id: trackingId,
       conversation_id: conversationId,
       name: matchingCall.name,
-      call_status: conversation.callStatus ?? null,
-      start_time: conversation.startTime ?? null,
-      end_time: conversation.endTime ?? null,
-      call_duration: conversation.callDuration ?? null,
+
+      call_status:
+        conversation.callStatus ?? null,
+
+      start_time:
+        conversation.startTime ?? null,
+
+      end_time:
+        conversation.endTime ?? null,
+
+      call_duration:
+        conversation.callDuration ?? null,
+
       overall_call_disposition:
-        conversation.overallCallDisposition ?? null,
-      post_call_extraction:
-        conversation.postCallExtraction ?? null,
-      transcript: conversation.utteranceAnalytics ?? [],
+        firstUseful(
+          conversation.overallCallDisposition,
+          conversation.overall_call_disposition
+        ),
+
+      disposition_result: dispositionResult,
+
+      stage_code: stageCode,
+
+      post_call_extraction: postCallExtraction,
+
+      transcript:
+        conversation.utteranceAnalytics ?? [],
+
+      debug: {
+        conversation_keys: Object.keys(conversation),
+        extraction_related_fields:
+          extractionDebug,
+      },
     });
   } catch (error) {
     return NextResponse.json(
