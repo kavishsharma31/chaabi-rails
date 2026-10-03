@@ -94,6 +94,19 @@ function asNumber(value: any): number | null {
     : null;
 }
 
+function asPositiveNumber(value: any): number | null {
+  const numeric = asNumber(value);
+
+  // Gnani may emit 0 for an unextracted optional money field.
+  // In rental terms, zero here means "unknown / not extracted",
+  // not an authoritative broker quote.
+  if (numeric === null || numeric <= 0) {
+    return null;
+  }
+
+  return numeric;
+}
+
 function isEmpty(value: any) {
   return (
     value === null ||
@@ -325,6 +338,24 @@ function normalizeExtraction(
   const brokerText =
     brokerTranscriptOnly(transcript);
 
+  const rawFinalRent =
+    asPositiveNumber(
+      extraction?.finalRentInr
+    );
+
+  // Gnani can occasionally classify an asking price as finalRentInr.
+  // For consequential rent decisions, require the broker to actually
+  // express finality in their own speech.
+  const brokerExpressedFinality =
+    /\b(final|lowest|minimum|best|last)\b/i.test(
+      brokerText
+    );
+
+  const finalRent =
+    brokerExpressedFinality
+      ? rawFinalRent
+      : null;
+
   let ownerConfirmationRequired =
     String(
       extraction?.ownerConfirmationRequired ??
@@ -353,19 +384,34 @@ function normalizeExtraction(
       extraction?.propertyAvailable ?? null,
 
     final_rent_inr:
-      asNumber(extraction?.finalRentInr),
+      finalRent,
+
+    raw_extracted_final_rent_inr:
+      rawFinalRent,
+
+    final_rent_confirmed:
+      brokerExpressedFinality &&
+      rawFinalRent !== null,
 
     maintenance_inr:
-      asNumber(extraction?.maintenanceInr),
+      asPositiveNumber(
+        extraction?.maintenanceInr
+      ),
 
     deposit_inr:
-      asNumber(extraction?.depositInr),
+      asPositiveNumber(
+        extraction?.depositInr
+      ),
 
     brokerage_inr:
-      asNumber(extraction?.brokerageInr),
+      asPositiveNumber(
+        extraction?.brokerageInr
+      ),
 
     possession_date_raw:
-      extraction?.possessionDate ?? null,
+      isEmpty(extraction?.possessionDate)
+        ? null
+        : extraction.possessionDate,
 
     occupancy_status:
       extraction?.occupancyStatus ?? null,
@@ -736,9 +782,25 @@ export async function POST(request: Request) {
       maxRent !== null &&
       finalRent > maxRent;
 
+    // A broker rent variance that is still within the tenant's
+    // authorized ceiling is not, by itself, an L3 approval boundary.
+    // We log it as a contradiction/variance and preserve the canonical
+    // owner-confirmed value, but Chaabi may continue autonomously.
+    const blockingContradictions =
+      contradictions.filter((item) => {
+        if (
+          item.field === "rent" &&
+          !aboveCeiling
+        ) {
+          return false;
+        }
+
+        return true;
+      });
+
     const escalationRequired =
       aboveCeiling ||
-      contradictions.length > 0;
+      blockingContradictions.length > 0;
 
     const escalationReasons: string[] =
       [];
@@ -749,9 +811,11 @@ export async function POST(request: Request) {
       );
     }
 
-    if (contradictions.length > 0) {
+    if (
+      blockingContradictions.length > 0
+    ) {
       escalationReasons.push(
-        `Broker information conflicts with ${contradictions.length} persisted property field(s).`
+        `Broker information conflicts with ${blockingContradictions.length} persisted property field(s) requiring tenant review.`
       );
     }
 
@@ -812,6 +876,7 @@ export async function POST(request: Request) {
     }
 
     if (
+      escalationRequired &&
       contradictions.length > 0
     ) {
       fields.status =
@@ -834,12 +899,16 @@ export async function POST(request: Request) {
         fields.status =
           aboveCeiling
             ? "available_owner_confirmed_broker_above_budget"
-            : "available_owner_confirmed_broker_reconfirmed";
+            : hasContradiction("rent")
+              ? "available_owner_confirmed_broker_variance_within_limits"
+              : "available_owner_confirmed_broker_reconfirmed";
       } else {
         fields.status =
           aboveCeiling
             ? "available_broker_confirmed_above_budget"
-            : "available_broker_confirmed";
+            : hasContradiction("rent")
+              ? "available_broker_variance_within_limits"
+              : "available_broker_confirmed";
       }
     }
 
@@ -852,6 +921,17 @@ export async function POST(request: Request) {
         extracted.property_available,
       final_rent_inr:
         extracted.final_rent_inr,
+      raw_extracted_final_rent_inr:
+        extracted.raw_extracted_final_rent_inr,
+      final_rent_confirmed:
+        extracted.final_rent_confirmed,
+      computed_budget_status:
+        finalRent !== null &&
+        maxRent !== null
+          ? aboveCeiling
+            ? "ABOVE_CEILING"
+            : "WITHIN_CEILING"
+          : "UNKNOWN",
       maintenance_inr:
         extracted.maintenance_inr,
       deposit_inr:
@@ -939,6 +1019,8 @@ export async function POST(request: Request) {
         }),
         output_summary: JSON.stringify({
           contradictions,
+          blocking_contradictions:
+            blockingContradictions,
           escalation_required:
             escalationRequired,
           escalation_reasons:
@@ -972,6 +1054,8 @@ export async function POST(request: Request) {
       },
 
       contradictions,
+      blocking_contradictions:
+        blockingContradictions,
 
       escalation: {
         required:
@@ -996,6 +1080,12 @@ export async function POST(request: Request) {
           !hasContradiction("rent") &&
           isEmpty(property.rent) &&
           finalRent !== null,
+        zero_money_values_treated_as_unknown:
+          true,
+        unconfirmed_asking_price_not_treated_as_final:
+          true,
+        within_ceiling_rent_variance_requires_approval:
+          false,
       },
     });
   } catch (error) {
