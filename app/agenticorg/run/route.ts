@@ -67,6 +67,11 @@ export async function POST(request: Request) {
       };
     }
 
+    console.log(
+        "AGENTICORG_FULL_RUN_RESPONSE",
+        JSON.stringify(responseData, null, 2)
+    );
+
     return NextResponse.json(
       {
         success: agenticOrgResponse.ok,
