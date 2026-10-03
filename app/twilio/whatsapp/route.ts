@@ -47,6 +47,70 @@ function extractAgentReply(data: any): string {
   return cleanAgentReply(reply);
 }
 
+async function sendWhatsAppMessage(
+  from: string,
+  to: string,
+  body: string
+) {
+  const accountSid =
+    process.env.TWILIO_ACCOUNT_SID;
+
+  const authToken =
+    process.env.TWILIO_AUTH_TOKEN;
+
+  if (!accountSid || !authToken) {
+    console.error(
+      "Twilio outbound credentials are not configured"
+    );
+    return false;
+  }
+
+  const form = new URLSearchParams();
+
+  form.set("From", from);
+  form.set("To", to);
+  form.set("Body", body);
+
+  const authorization =
+    Buffer.from(
+      `${accountSid}:${authToken}`
+    ).toString("base64");
+
+  const response = await fetch(
+    `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`,
+    {
+      method: "POST",
+      headers: {
+        Authorization:
+          `Basic ${authorization}`,
+        "Content-Type":
+          "application/x-www-form-urlencoded",
+      },
+      body: form.toString(),
+      cache: "no-store",
+    }
+  );
+
+  const responseText =
+    await response.text();
+
+  if (!response.ok) {
+    console.error(
+      "Twilio outbound WhatsApp failed:",
+      response.status,
+      responseText
+    );
+
+    return false;
+  }
+
+  console.log(
+    "Outbound WhatsApp sent successfully"
+  );
+
+  return true;
+}
+
 async function runAgent(
   origin: string,
   sender: string,
@@ -71,7 +135,8 @@ Respond directly to the tenant. Keep the response concise and suitable for Whats
     }
   );
 
-  const responseText = await agentResponse.text();
+  const responseText =
+    await agentResponse.text();
 
   let data: any;
 
@@ -96,27 +161,66 @@ Respond directly to the tenant. Keep the response concise and suitable for Whats
   return extractAgentReply(data);
 }
 
-function timeout(ms: number): Promise<null> {
+function timeout(
+  ms: number
+): Promise<null> {
   return new Promise((resolve) => {
-    setTimeout(() => resolve(null), ms);
+    setTimeout(
+      () => resolve(null),
+      ms
+    );
   });
 }
 
-export async function POST(request: Request) {
+export async function POST(
+  request: Request
+) {
   try {
-    const formData = await request.formData();
+    const formData =
+      await request.formData();
 
     const message = String(
       formData.get("Body") || ""
     ).trim();
 
+    /*
+     * Incoming WhatsApp addresses from
+     * Twilio already look like:
+     *
+     * whatsapp:+91...
+     */
     const sender = String(
       formData.get("From") || ""
     ).trim();
 
+    const twilioWhatsAppSender =
+      String(
+        formData.get("To") || ""
+      ).trim();
+
     if (!message) {
       return new Response(
-        twiml("Please send me a text message."),
+        twiml(
+          "Please send me a text message."
+        ),
+        {
+          status: 200,
+          headers: {
+            "Content-Type":
+              "text/xml; charset=utf-8",
+          },
+        }
+      );
+    }
+
+    if (
+      !sender ||
+      !twilioWhatsAppSender
+    ) {
+      return new Response(
+        twiml(
+          "Chaabi couldn't identify the WhatsApp conversation."
+        ),
         {
           status: 200,
           headers: {
@@ -130,52 +234,63 @@ export async function POST(request: Request) {
     const origin =
       new URL(request.url).origin;
 
-    /*
-     * Start the AgenticOrg run immediately.
-     *
-     * For quick agent runs, we'll still return the
-     * real answer directly to WhatsApp.
-     *
-     * For long-running actions such as Gnani calls,
-     * WhatsApp gets an acknowledgement instead of
-     * sitting open until AgenticOrg/CloudFront times out.
-     */
-    const agentPromise = runAgent(
-      origin,
-      sender,
-      message
-    );
+    const agentPromise =
+      runAgent(
+        origin,
+        sender,
+        message
+      );
 
     /*
-     * Critical:
-     * keep the AgenticOrg work alive even after we
-     * return the Twilio webhook response.
+     * True only if we already returned
+     * Chaabi's real response through
+     * the original Twilio webhook.
+     */
+    let repliedSynchronously =
+      false;
+
+    /*
+     * Continue waiting for AgenticOrg
+     * after the Twilio webhook response
+     * has already been returned.
      */
     after(async () => {
       try {
         const finalReply =
           await agentPromise;
 
-        if (finalReply) {
-          console.log(
-            "Background Chaabi result:",
-            finalReply
-          );
+        if (
+          repliedSynchronously ||
+          !finalReply
+        ) {
+          return;
         }
+
+        /*
+         * The user's incoming From becomes
+         * our outbound To.
+         *
+         * Twilio's incoming To becomes
+         * our outbound From.
+         */
+        await sendWhatsAppMessage(
+          twilioWhatsAppSender,
+          sender,
+          finalReply
+        );
       } catch (error) {
         console.error(
-          "Background Chaabi run error:",
+          "Background Chaabi run/send error:",
           error
         );
       }
     });
 
     /*
-     * Give fast AgenticOrg requests a short window
-     * to return their actual answer.
-     *
-     * We deliberately do NOT wait anywhere near the
-     * long broker-call execution time.
+     * Give simple requests four seconds.
+     * If Chaabi answers quickly, send the
+     * real answer as the normal webhook
+     * response.
      */
     const quickResult =
       await Promise.race([
@@ -184,9 +299,12 @@ export async function POST(request: Request) {
       ]);
 
     if (
-      typeof quickResult === "string" &&
+      typeof quickResult ===
+        "string" &&
       quickResult.length > 0
     ) {
+      repliedSynchronously = true;
+
       return new Response(
         twiml(quickResult),
         {
@@ -200,10 +318,12 @@ export async function POST(request: Request) {
     }
 
     /*
-     * Long-running agent action.
+     * Long-running request:
+     * acknowledge immediately.
      *
-     * Twilio receives this immediately while the
-     * AgenticOrg run continues in after().
+     * after() will send the real answer
+     * as a second outbound WhatsApp
+     * message once AgenticOrg completes.
      */
     return new Response(
       twiml(
