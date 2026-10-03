@@ -47,6 +47,13 @@ type AppendEventTask = {
   status?: string;
 };
 
+type ReadStateRecordTask = {
+  operation: "read_state_record";
+  tab: StateTab;
+  key_field: string;
+  key_value: string;
+};
+
 type UpsertStateRecordTask = {
   operation: "upsert_state_record";
   tab: StateTab;
@@ -58,6 +65,7 @@ type UpsertStateRecordTask = {
 type StateTask =
   | ReadEventTask
   | AppendEventTask
+  | ReadStateRecordTask
   | UpsertStateRecordTask;
 
 function parseToolText(result: any) {
@@ -198,7 +206,7 @@ export async function POST(request: Request) {
 
     client = new Client({
       name: "chaabi-state-worker",
-      version: "2.2.0",
+      version: "2.3.0",
     });
 
     const transport = new StreamableHTTPClientTransport(
@@ -322,6 +330,87 @@ export async function POST(request: Request) {
         source: "google_sheets_via_composio",
         tab: "events",
         event: verifiedEvent,
+      });
+    }
+
+    // =========================================================
+    // READ CURRENT STATE RECORD
+    // =========================================================
+
+    if (task.operation === "read_state_record") {
+      if (
+        !ALLOWED_STATE_TABS.includes(task.tab as StateTab)
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Invalid state tab",
+            allowed_tabs: ALLOWED_STATE_TABS,
+          },
+          { status: 400 }
+        );
+      }
+
+      if (!task.key_field || !task.key_value) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "key_field and key_value are required",
+          },
+          { status: 400 }
+        );
+      }
+
+      const { headers, rows } = await readTab(
+        client,
+        task.tab
+      );
+
+      const keyIndex = headers.indexOf(task.key_field);
+
+      if (keyIndex === -1) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Key field '${task.key_field}' does not exist in ${task.tab}`,
+            headers,
+          },
+          { status: 400 }
+        );
+      }
+
+      const row = rows.find(
+        (candidate) =>
+          String(candidate?.[keyIndex] ?? "") ===
+          String(task.key_value)
+      );
+
+      if (!row) {
+        return NextResponse.json({
+          success: true,
+          found: false,
+          source: "google_sheets_via_composio",
+          tab: task.tab,
+          key_field: task.key_field,
+          key_value: task.key_value,
+        });
+      }
+
+      const record = Object.fromEntries(
+        headers.map((header, index) => [
+          header,
+          row[index] ?? null,
+        ])
+      );
+
+      return NextResponse.json({
+        success: true,
+        found: true,
+        source: "google_sheets_via_composio",
+        tab: task.tab,
+        key_field: task.key_field,
+        key_value: task.key_value,
+        record,
       });
     }
 
