@@ -9,7 +9,7 @@ const handler = createMcpHandler(
   ({ requestInfo }) => {
     const server = new McpServer({
       name: "chaabi-integrations",
-      version: "1.4.0",
+      version: "1.5.0",
     });
 
     const origin = requestInfo
@@ -296,26 +296,51 @@ const handler = createMcpHandler(
     );
 
     // =========================================================
-    // CHAABI PERSISTENT STATE WORKER
+    // CHAABI PERSISTENT STATE
     // =========================================================
 
     server.registerTool(
       "run_state_worker",
       {
         description:
-          "Read or update Chaabi's persistent rental state through the connected Google Sheets state worker. Use this when an action depends on previous rental activity, when state must persist across conversations, or after a material action or decision needs to be recorded. Give the worker a precise task describing what to read, append, or update. Never claim a state change succeeded unless this tool confirms it.",
+          "Read or update Chaabi's persistent rental state through the connected Google Sheets state worker. Use this when an action depends on previous rental activity, when state must persist across conversations, or after a material action or decision needs to be recorded. Give the worker a precise JSON task describing what to read, append, or update. Never claim a state change succeeded unless this tool confirms it.",
         inputSchema: z.object({
           task: z
             .string()
             .min(1)
             .describe(
-              "Precise state operation to perform, including what entity or event to read, append, or update."
+              "Valid JSON string describing the persistent state operation."
             ),
         }),
       },
       async ({ task }) => {
         return forwardJson("/agenticorg/state-worker", {
           task,
+        });
+      }
+    );
+
+    // =========================================================
+    // RENTAL TRUTH / PROPERTY PROFILE
+    // =========================================================
+
+    server.registerTool(
+      "get_property_profile",
+      {
+        description:
+          "Retrieve the persisted Rental Truth profile for a property by property_id. Returns current known address, coordinates, BHK, rent, maintenance, deposit, availability/status, possession date, verification timestamp and notes. Use this before relying on previously known property availability or terms. Treat missing or stale fields as unresolved rather than inventing values.",
+        inputSchema: z.object({
+          property_id: z.string().min(1),
+        }),
+      },
+      async ({ property_id }) => {
+        return forwardJson("/agenticorg/state-worker", {
+          task: JSON.stringify({
+            operation: "read_state_record",
+            tab: "properties",
+            key_field: "property_id",
+            key_value: property_id,
+          }),
         });
       }
     );
