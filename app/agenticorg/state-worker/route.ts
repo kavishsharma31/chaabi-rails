@@ -15,10 +15,27 @@ const STATE_SHEET_ID =
 
 const GOOGLE_SHEETS_ACCOUNT = "googlesheets_gecko-baluba";
 
-type StateTask = {
+type ReadEventTask = {
   operation: "read_event";
   event_id: string;
 };
+
+type AppendEventTask = {
+  operation: "append_event";
+  event_id: string;
+  run_id?: string;
+  timestamp?: string;
+  actor?: string;
+  connector?: string;
+  action?: string;
+  entity_type?: string;
+  entity_id?: string;
+  input_summary?: string;
+  output_summary?: string;
+  status?: string;
+};
+
+type StateTask = ReadEventTask | AppendEventTask;
 
 function parseToolText(result: any) {
   const textPart = result?.content?.find(
@@ -30,6 +47,78 @@ function parseToolText(result: any) {
   }
 
   return JSON.parse(textPart.text);
+}
+
+async function executeGoogleSheetTool(
+  client: Client,
+  toolSlug: string,
+  args: Record<string, unknown>
+) {
+  const result = await client.callTool({
+    name: "COMPOSIO_MULTI_EXECUTE_TOOL",
+    arguments: {
+      tools: [
+        {
+          account: GOOGLE_SHEETS_ACCOUNT,
+          tool_slug: toolSlug,
+          arguments: args,
+        },
+      ],
+      sync_response_to_workbench: false,
+    },
+  });
+
+  const parsed = parseToolText(result);
+  const executionResult = parsed?.data?.results?.[0];
+
+  if (!executionResult?.response?.successful) {
+    throw new Error(
+      executionResult?.response?.error ??
+        executionResult?.response?.data?.message ??
+        `${toolSlug} failed`
+    );
+  }
+
+  return executionResult.response.data;
+}
+
+async function readEvent(client: Client, eventId: string) {
+  const data = await executeGoogleSheetTool(
+    client,
+    "GOOGLESHEETS_VALUES_GET",
+    {
+      spreadsheet_id: STATE_SHEET_ID,
+      range: "events!A1:K1000",
+    }
+  );
+
+  const values = data?.values;
+
+  if (!Array.isArray(values) || values.length === 0) {
+    return null;
+  }
+
+  const headers = values[0] as string[];
+  const eventIdIndex = headers.indexOf("event_id");
+
+  if (eventIdIndex === -1) {
+    throw new Error("events tab does not contain an event_id column");
+  }
+
+  const row = values
+    .slice(1)
+    .find((candidate: any[]) => candidate?.[eventIdIndex] === eventId);
+
+  if (!row) {
+    return null;
+  }
+
+  return Object.fromEntries(
+    headers.map((header, index) => [
+      header,
+      row[index] ?? null,
+    ])
+  );
 }
 
 export async function POST(request: Request) {
@@ -68,28 +157,7 @@ export async function POST(request: Request) {
       return NextResponse.json(
         {
           success: false,
-          error:
-            'task must be valid JSON, for example {"operation":"read_event","event_id":"STATE-WORKER-TEST-001"}',
-        },
-        { status: 400 }
-      );
-    }
-
-    if (task.operation !== "read_event") {
-      return NextResponse.json(
-        {
-          success: false,
-          error: `Unsupported state operation: ${task.operation}`,
-        },
-        { status: 400 }
-      );
-    }
-
-    if (!task.event_id) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "event_id is required",
+          error: "task must be valid JSON",
         },
         { status: 400 }
       );
@@ -97,7 +165,7 @@ export async function POST(request: Request) {
 
     client = new Client({
       name: "chaabi-state-worker",
-      version: "2.0.0",
+      version: "2.1.0",
     });
 
     const transport = new StreamableHTTPClientTransport(
@@ -113,92 +181,126 @@ export async function POST(request: Request) {
 
     await client.connect(transport);
 
-    const result = await client.callTool({
-      name: "COMPOSIO_MULTI_EXECUTE_TOOL",
-      arguments: {
-        tools: [
+    // =========================================================
+    // READ EVENT
+    // =========================================================
+
+    if (task.operation === "read_event") {
+      if (!task.event_id) {
+        return NextResponse.json(
           {
-            account: GOOGLE_SHEETS_ACCOUNT,
-            tool_slug: "GOOGLESHEETS_VALUES_GET",
-            arguments: {
-              spreadsheet_id: STATE_SHEET_ID,
-              range: "events!A1:K1000",
-            },
+            success: false,
+            error: "event_id is required",
           },
-        ],
-        sync_response_to_workbench: false,
+          { status: 400 }
+        );
+      }
+
+      const event = await readEvent(client, task.event_id);
+
+      if (!event) {
+        return NextResponse.json({
+          success: true,
+          found: false,
+          event_id: task.event_id,
+        });
+      }
+
+      return NextResponse.json({
+        success: true,
+        found: true,
+        source: "google_sheets_via_composio",
+        spreadsheet_id: STATE_SHEET_ID,
+        tab: "events",
+        event,
+      });
+    }
+
+    // =========================================================
+    // APPEND EVENT
+    // =========================================================
+
+    if (task.operation === "append_event") {
+      if (!task.event_id) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "event_id is required",
+          },
+          { status: 400 }
+        );
+      }
+
+      const existing = await readEvent(client, task.event_id);
+
+      if (existing) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "An event with this event_id already exists",
+            event: existing,
+          },
+          { status: 409 }
+        );
+      }
+
+      const row = [
+        task.event_id,
+        task.run_id ?? "",
+        task.timestamp ?? new Date().toISOString(),
+        task.actor ?? "Chaabi",
+        task.connector ?? "run_state_worker",
+        task.action ?? "",
+        task.entity_type ?? "",
+        task.entity_id ?? "",
+        task.input_summary ?? "",
+        task.output_summary ?? "",
+        task.status ?? "completed",
+      ];
+
+      await executeGoogleSheetTool(
+        client,
+        "GOOGLESHEETS_SPREADSHEETS_VALUES_APPEND",
+        {
+          spreadsheetId: STATE_SHEET_ID,
+          range: "events!A:K",
+          valueInputOption: "USER_ENTERED",
+          insertDataOption: "INSERT_ROWS",
+          majorDimension: "ROWS",
+          includeValuesInResponse: true,
+          values: [row],
+        }
+      );
+
+      const verifiedEvent = await readEvent(
+        client,
+        task.event_id
+      );
+
+      if (!verifiedEvent) {
+        throw new Error(
+          "Event append returned successfully but verification read failed"
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        written: true,
+        verified: true,
+        source: "google_sheets_via_composio",
+        spreadsheet_id: STATE_SHEET_ID,
+        tab: "events",
+        event: verifiedEvent,
+      });
+    }
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: "Unsupported state operation",
       },
-    });
-
-    const parsed = parseToolText(result);
-
-    const executionResult = parsed?.data?.results?.[0];
-
-    if (!executionResult?.response?.successful) {
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            executionResult?.response?.error ??
-            executionResult?.response?.data?.message ??
-            "Google Sheets read failed",
-          composio_result: parsed,
-        },
-        { status: 502 }
-      );
-    }
-
-    const values = executionResult?.response?.data?.values;
-
-    if (!Array.isArray(values) || values.length === 0) {
-      return NextResponse.json({
-        success: true,
-        found: false,
-        event_id: task.event_id,
-      });
-    }
-
-    const headers = values[0] as string[];
-    const eventIdIndex = headers.indexOf("event_id");
-
-    if (eventIdIndex === -1) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "events tab does not contain an event_id column",
-          headers,
-        },
-        { status: 500 }
-      );
-    }
-
-    const row = values
-      .slice(1)
-      .find((candidate: any[]) => candidate?.[eventIdIndex] === task.event_id);
-
-    if (!row) {
-      return NextResponse.json({
-        success: true,
-        found: false,
-        event_id: task.event_id,
-      });
-    }
-
-    const event = Object.fromEntries(
-      headers.map((header, index) => [
-        header,
-        row[index] ?? null,
-      ])
+      { status: 400 }
     );
-
-    return NextResponse.json({
-      success: true,
-      found: true,
-      source: "google_sheets_via_composio",
-      spreadsheet_id: STATE_SHEET_ID,
-      tab: "events",
-      event,
-    });
   } catch (error) {
     return NextResponse.json(
       {
