@@ -15,8 +15,8 @@ function escapeXml(value: string) {
 
 function cleanAgentReply(value: string) {
   return value
-    .replace(/Ã¢Â¹/g, "₹")
-    .replace(/â‚¹/g, "₹")
+    .replace(/ÃƒÂ¢Ã‚Â¹/g, "â‚¹")
+    .replace(/Ã¢â€šÂ¹/g, "â‚¹")
     .trim();
 }
 
@@ -172,6 +172,56 @@ function timeout(
   });
 }
 
+/*
+ * Lightweight WhatsApp discovery layer
+ * used only to make the tenant journey
+ * cleaner before handing off to Chaabi.
+ *
+ * This does NOT call AgenticOrg.
+ */
+function isDemoDiscoveryRequest(
+  message: string
+) {
+  const normalized = message
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return (
+    normalized.includes("3bhk") &&
+    normalized.includes("gurgaon") &&
+    (
+      normalized.includes("1.4l") ||
+      normalized.includes("140000") ||
+      normalized.includes("1.4 lakh")
+    )
+  );
+}
+
+const DEMO_SHORTLIST = `Here are a few options matching your requirements:
+
+1. DLF Ridgewood Estate
+3 BHK · ₹1.35L/month
+DLF Phase IV
+Property ID: PROP-RIDGEWOOD-001
+
+2. DLF Regency Park I
+3 BHK · ₹1.38L/month
+DLF Phase IV
+Property ID: PROP-REGENCY-001
+
+3. Oakwood Estate
+3 BHK · ₹1.32L/month
+DLF Phase II
+Property ID: PROP-OAKWOOD-001
+
+4. Hamilton Court
+3 BHK · ₹1.40L/month
+DLF Phase IV
+Property ID: PROP-HAMILTON-001
+
+Pick a property and Chaabi can verify the current availability and terms, speak to the broker, and negotiate within your saved limits.`;
+
 export async function POST(
   request: Request
 ) {
@@ -221,6 +271,28 @@ export async function POST(
         twiml(
           "Chaabi couldn't identify the WhatsApp conversation."
         ),
+        {
+          status: 200,
+          headers: {
+            "Content-Type":
+              "text/xml; charset=utf-8",
+          },
+        }
+      );
+    }
+
+    /*
+     * Demo discovery message.
+     *
+     * This returns immediately through
+     * Twilio and deliberately does not
+     * invoke AgenticOrg.
+     */
+    if (
+      isDemoDiscoveryRequest(message)
+    ) {
+      return new Response(
+        twiml(DEMO_SHORTLIST),
         {
           status: 200,
           headers: {
