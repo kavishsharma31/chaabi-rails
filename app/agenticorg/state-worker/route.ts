@@ -1,86 +1,204 @@
 import { NextResponse } from "next/server";
+import {
+  Client,
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-const AGENTICORG_BASE_URL =
-  "https://agenticorg.hackathon.pinelabs.com";
+const COMPOSIO_MCP_URL = "https://connect.composio.dev/mcp";
 
-const STATE_WORKER_AGENT_ID =
-  "b03ed0dd-4f3b-40e2-928d-3f06e927697f";
+const STATE_SHEET_ID =
+  "1acMC3cwIXVql_N7p9YJZjnrx9JDkZxR6eVzPReNkabc";
+
+const GOOGLE_SHEETS_ACCOUNT = "googlesheets_gecko-baluba";
+
+type StateTask = {
+  operation: "read_event";
+  event_id: string;
+};
+
+function parseToolText(result: any) {
+  const textPart = result?.content?.find(
+    (part: any) => part?.type === "text"
+  );
+
+  if (!textPart?.text) {
+    throw new Error("Composio returned no text response");
+  }
+
+  return JSON.parse(textPart.text);
+}
 
 export async function POST(request: Request) {
-  try {
-    const session = process.env.AGENTICORG_SESSION;
-    const csrf = process.env.AGENTICORG_CSRF;
+  let client: Client | null = null;
 
-    if (!session || !csrf) {
+  try {
+    const consumerKey = process.env.COMPOSIO_CONSUMER_KEY;
+
+    if (!consumerKey) {
       return NextResponse.json(
         {
           success: false,
-          error: "AgenticOrg credentials are not configured",
+          error: "COMPOSIO_CONSUMER_KEY is not configured",
         },
         { status: 500 }
       );
     }
 
     const body = await request.json();
-    const task = body?.task;
 
-    if (!task || typeof task !== "string") {
+    if (!body?.task || typeof body.task !== "string") {
       return NextResponse.json(
         {
           success: false,
-          error: "task is required",
+          error: "task must be supplied as a JSON string",
         },
         { status: 400 }
       );
     }
 
-    const response = await fetch(
-      `${AGENTICORG_BASE_URL}/api/v1/agents/${STATE_WORKER_AGENT_ID}/run`,
-      {
-        method: "POST",
-        headers: {
-          Accept: "application/json, text/plain, */*",
-          "Content-Type": "application/json",
-          Cookie: `agenticorg_session=${session}; agenticorg_csrf=${csrf}`,
-          "X-CSRF-Token": csrf,
-          Origin: AGENTICORG_BASE_URL,
-          Referer: `${AGENTICORG_BASE_URL}/dashboard/agents/${STATE_WORKER_AGENT_ID}`,
-        },
-        body: JSON.stringify({
-          action: "run",
-          inputs: {
-            task,
-          },
-          csrf_token: csrf,
-        }),
-        cache: "no-store",
-      }
-    );
-
-    const text = await response.text();
-
-    let data: unknown;
+    let task: StateTask;
 
     try {
-      data = JSON.parse(text);
+      task = JSON.parse(body.task);
     } catch {
-      data = {
-        raw_response: text,
-      };
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'task must be valid JSON, for example {"operation":"read_event","event_id":"STATE-WORKER-TEST-001"}',
+        },
+        { status: 400 }
+      );
     }
 
-    return NextResponse.json(
+    if (task.operation !== "read_event") {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `Unsupported state operation: ${task.operation}`,
+        },
+        { status: 400 }
+      );
+    }
+
+    if (!task.event_id) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "event_id is required",
+        },
+        { status: 400 }
+      );
+    }
+
+    client = new Client({
+      name: "chaabi-state-worker",
+      version: "2.0.0",
+    });
+
+    const transport = new StreamableHTTPClientTransport(
+      new URL(COMPOSIO_MCP_URL),
       {
-        success: response.ok,
-        agenticorg_status: response.status,
-        response: data,
-      },
-      {
-        status: response.ok ? 200 : response.status,
+        requestInit: {
+          headers: {
+            "x-consumer-api-key": consumerKey,
+          },
+        },
       }
     );
+
+    await client.connect(transport);
+
+    const result = await client.callTool({
+      name: "COMPOSIO_MULTI_EXECUTE_TOOL",
+      arguments: {
+        tools: [
+          {
+            account: GOOGLE_SHEETS_ACCOUNT,
+            tool_slug: "GOOGLESHEETS_VALUES_GET",
+            arguments: {
+              spreadsheet_id: STATE_SHEET_ID,
+              range: "events!A1:K1000",
+            },
+          },
+        ],
+        sync_response_to_workbench: false,
+      },
+    });
+
+    const parsed = parseToolText(result);
+
+    const executionResult = parsed?.data?.results?.[0];
+
+    if (!executionResult?.response?.successful) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            executionResult?.response?.error ??
+            executionResult?.response?.data?.message ??
+            "Google Sheets read failed",
+          composio_result: parsed,
+        },
+        { status: 502 }
+      );
+    }
+
+    const values = executionResult?.response?.data?.values;
+
+    if (!Array.isArray(values) || values.length === 0) {
+      return NextResponse.json({
+        success: true,
+        found: false,
+        event_id: task.event_id,
+      });
+    }
+
+    const headers = values[0] as string[];
+    const eventIdIndex = headers.indexOf("event_id");
+
+    if (eventIdIndex === -1) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: "events tab does not contain an event_id column",
+          headers,
+        },
+        { status: 500 }
+      );
+    }
+
+    const row = values
+      .slice(1)
+      .find((candidate: any[]) => candidate?.[eventIdIndex] === task.event_id);
+
+    if (!row) {
+      return NextResponse.json({
+        success: true,
+        found: false,
+        event_id: task.event_id,
+      });
+    }
+
+    const event = Object.fromEntries(
+      headers.map((header, index) => [
+        header,
+        row[index] ?? null,
+      ])
+    );
+
+    return NextResponse.json({
+      success: true,
+      found: true,
+      source: "google_sheets_via_composio",
+      spreadsheet_id: STATE_SHEET_ID,
+      tab: "events",
+      event,
+    });
   } catch (error) {
     return NextResponse.json(
       {
@@ -88,9 +206,15 @@ export async function POST(request: Request) {
         error:
           error instanceof Error
             ? error.message
-            : "Unexpected state worker bridge error",
+            : "Unexpected direct Composio state-worker error",
       },
       { status: 500 }
     );
+  } finally {
+    if (client) {
+      try {
+        await client.close();
+      } catch {}
+    }
   }
 }
