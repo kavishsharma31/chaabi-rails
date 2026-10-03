@@ -15,6 +15,18 @@ const STATE_SHEET_ID =
 
 const GOOGLE_SHEETS_ACCOUNT = "googlesheets_gecko-baluba";
 
+const ALLOWED_STATE_TABS = [
+  "users",
+  "permissions",
+  "properties",
+  "contacts",
+  "tasks",
+  "payments",
+  "eval_runs",
+] as const;
+
+type StateTab = (typeof ALLOWED_STATE_TABS)[number];
+
 type ReadEventTask = {
   operation: "read_event";
   event_id: string;
@@ -35,7 +47,18 @@ type AppendEventTask = {
   status?: string;
 };
 
-type StateTask = ReadEventTask | AppendEventTask;
+type UpsertStateRecordTask = {
+  operation: "upsert_state_record";
+  tab: StateTab;
+  key_field: string;
+  key_value: string;
+  fields: Record<string, string | number | boolean | null>;
+};
+
+type StateTask =
+  | ReadEventTask
+  | AppendEventTask
+  | UpsertStateRecordTask;
 
 function parseToolText(result: any) {
   const textPart = result?.content?.find(
@@ -82,32 +105,42 @@ async function executeGoogleSheetTool(
   return executionResult.response.data;
 }
 
-async function readEvent(client: Client, eventId: string) {
+async function readTab(client: Client, tab: string) {
   const data = await executeGoogleSheetTool(
     client,
     "GOOGLESHEETS_VALUES_GET",
     {
       spreadsheet_id: STATE_SHEET_ID,
-      range: "events!A1:K1000",
+      range: `${tab}!A1:Z1000`,
     }
   );
 
-  const values = data?.values;
+  const values = Array.isArray(data?.values)
+    ? data.values
+    : [];
 
-  if (!Array.isArray(values) || values.length === 0) {
-    return null;
+  if (values.length === 0) {
+    throw new Error(`${tab} tab is empty or has no headers`);
   }
 
-  const headers = values[0] as string[];
+  return {
+    headers: values[0] as string[],
+    rows: values.slice(1) as any[][],
+  };
+}
+
+async function readEvent(client: Client, eventId: string) {
+  const { headers, rows } = await readTab(client, "events");
+
   const eventIdIndex = headers.indexOf("event_id");
 
   if (eventIdIndex === -1) {
     throw new Error("events tab does not contain an event_id column");
   }
 
-  const row = values
-    .slice(1)
-    .find((candidate: any[]) => candidate?.[eventIdIndex] === eventId);
+  const row = rows.find(
+    (candidate) => candidate?.[eventIdIndex] === eventId
+  );
 
   if (!row) {
     return null;
@@ -165,7 +198,7 @@ export async function POST(request: Request) {
 
     client = new Client({
       name: "chaabi-state-worker",
-      version: "2.1.0",
+      version: "2.2.0",
     });
 
     const transport = new StreamableHTTPClientTransport(
@@ -210,7 +243,6 @@ export async function POST(request: Request) {
         success: true,
         found: true,
         source: "google_sheets_via_composio",
-        spreadsheet_id: STATE_SHEET_ID,
         tab: "events",
         event,
       });
@@ -279,7 +311,7 @@ export async function POST(request: Request) {
 
       if (!verifiedEvent) {
         throw new Error(
-          "Event append returned successfully but verification read failed"
+          "Event append succeeded but verification read failed"
         );
       }
 
@@ -288,9 +320,159 @@ export async function POST(request: Request) {
         written: true,
         verified: true,
         source: "google_sheets_via_composio",
-        spreadsheet_id: STATE_SHEET_ID,
         tab: "events",
         event: verifiedEvent,
+      });
+    }
+
+    // =========================================================
+    // UPSERT CURRENT STATE RECORD
+    // =========================================================
+
+    if (task.operation === "upsert_state_record") {
+      if (
+        !ALLOWED_STATE_TABS.includes(task.tab as StateTab)
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "Invalid state tab",
+            allowed_tabs: ALLOWED_STATE_TABS,
+          },
+          { status: 400 }
+        );
+      }
+
+      if (!task.key_field || !task.key_value) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "key_field and key_value are required",
+          },
+          { status: 400 }
+        );
+      }
+
+      if (
+        !task.fields ||
+        typeof task.fields !== "object" ||
+        Array.isArray(task.fields)
+      ) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "fields must be an object",
+          },
+          { status: 400 }
+        );
+      }
+
+      const { headers, rows } = await readTab(
+        client,
+        task.tab
+      );
+
+      const keyIndex = headers.indexOf(task.key_field);
+
+      if (keyIndex === -1) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: `Key field '${task.key_field}' does not exist in ${task.tab}`,
+            headers,
+          },
+          { status: 400 }
+        );
+      }
+
+      const invalidFields = Object.keys(task.fields).filter(
+        (field) => !headers.includes(field)
+      );
+
+      if (invalidFields.length > 0) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: "One or more fields do not exist in the target tab",
+            invalid_fields: invalidFields,
+            headers,
+          },
+          { status: 400 }
+        );
+      }
+
+      const existingRow = rows.find(
+        (row) =>
+          String(row?.[keyIndex] ?? "") ===
+          String(task.key_value)
+      );
+
+      const mergedRecord: Record<string, any> = {};
+
+      headers.forEach((header, index) => {
+        mergedRecord[header] =
+          existingRow?.[index] ?? "";
+      });
+
+      mergedRecord[task.key_field] = task.key_value;
+
+      for (const [key, value] of Object.entries(
+        task.fields
+      )) {
+        mergedRecord[key] = value ?? "";
+      }
+
+      const row = headers.map(
+        (header) => mergedRecord[header] ?? ""
+      );
+
+      await executeGoogleSheetTool(
+        client,
+        "GOOGLESHEETS_UPSERT_ROWS",
+        {
+          spreadsheetId: STATE_SHEET_ID,
+          sheetName: task.tab,
+          keyColumn: task.key_field,
+          headers,
+          rows: [row],
+          strictMode: true,
+        }
+      );
+
+      const verification = await readTab(
+        client,
+        task.tab
+      );
+
+      const verifiedRow = verification.rows.find(
+        (candidate) =>
+          String(candidate?.[keyIndex] ?? "") ===
+          String(task.key_value)
+      );
+
+      if (!verifiedRow) {
+        throw new Error(
+          "State upsert succeeded but verification read failed"
+        );
+      }
+
+      const verifiedRecord = Object.fromEntries(
+        headers.map((header, index) => [
+          header,
+          verifiedRow[index] ?? null,
+        ])
+      );
+
+      return NextResponse.json({
+        success: true,
+        upserted: true,
+        verified: true,
+        mode: existingRow ? "updated" : "inserted",
+        source: "google_sheets_via_composio",
+        tab: task.tab,
+        key_field: task.key_field,
+        key_value: task.key_value,
+        record: verifiedRecord,
       });
     }
 
