@@ -172,29 +172,34 @@ function timeout(
   });
 }
 
-/*
- * Lightweight WhatsApp discovery layer
- * used only to make the tenant journey
- * cleaner before handing off to Chaabi.
- *
- * This does NOT call AgenticOrg.
- */
 function isDemoDiscoveryRequest(
   message: string
 ) {
   const normalized = message
     .toLowerCase()
+    .replace(/₹/g, "")
+    .replace(/,/g, "")
     .replace(/\s+/g, " ")
     .trim();
 
+  const hasBhk =
+    /3\s*bhk/.test(normalized);
+
+  const hasLocation =
+    normalized.includes("gurgaon") ||
+    normalized.includes("gurugram");
+
+  const hasBudget =
+    normalized.includes("1.4l") ||
+    normalized.includes("1.40l") ||
+    normalized.includes("1.4 lakh") ||
+    normalized.includes("1.40 lakh") ||
+    normalized.includes("140000");
+
   return (
-    normalized.includes("3bhk") &&
-    normalized.includes("gurgaon") &&
-    (
-      normalized.includes("1.4l") ||
-      normalized.includes("140000") ||
-      normalized.includes("1.4 lakh")
-    )
+    hasBhk &&
+    hasLocation &&
+    hasBudget
   );
 }
 
@@ -233,12 +238,6 @@ export async function POST(
       formData.get("Body") || ""
     ).trim();
 
-    /*
-     * Incoming WhatsApp addresses from
-     * Twilio already look like:
-     *
-     * whatsapp:+91...
-     */
     const sender = String(
       formData.get("From") || ""
     ).trim();
@@ -282,15 +281,16 @@ export async function POST(
     }
 
     /*
-     * Demo discovery message.
-     *
-     * This returns immediately through
-     * Twilio and deliberately does not
-     * invoke AgenticOrg.
+     * Lightweight shortlist layer.
+     * This does NOT call AgenticOrg.
      */
     if (
       isDemoDiscoveryRequest(message)
     ) {
+      console.log(
+        "Returning demo WhatsApp property shortlist"
+      );
+
       return new Response(
         twiml(DEMO_SHORTLIST),
         {
@@ -313,19 +313,9 @@ export async function POST(
         message
       );
 
-    /*
-     * True only if we already returned
-     * Chaabi's real response through
-     * the original Twilio webhook.
-     */
     let repliedSynchronously =
       false;
 
-    /*
-     * Continue waiting for AgenticOrg
-     * after the Twilio webhook response
-     * has already been returned.
-     */
     after(async () => {
       try {
         const finalReply =
@@ -338,13 +328,6 @@ export async function POST(
           return;
         }
 
-        /*
-         * The user's incoming From becomes
-         * our outbound To.
-         *
-         * Twilio's incoming To becomes
-         * our outbound From.
-         */
         await sendWhatsAppMessage(
           twilioWhatsAppSender,
           sender,
@@ -358,12 +341,6 @@ export async function POST(
       }
     });
 
-    /*
-     * Give simple requests four seconds.
-     * If Chaabi answers quickly, send the
-     * real answer as the normal webhook
-     * response.
-     */
     const quickResult =
       await Promise.race([
         agentPromise,
@@ -389,14 +366,6 @@ export async function POST(
       );
     }
 
-    /*
-     * Long-running request:
-     * acknowledge immediately.
-     *
-     * after() will send the real answer
-     * as a second outbound WhatsApp
-     * message once AgenticOrg completes.
-     */
     return new Response(
       twiml(
         "Got it. Chaabi has started working on this."
