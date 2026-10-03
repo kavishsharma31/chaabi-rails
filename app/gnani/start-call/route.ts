@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { logConnectorCall } from "@/lib/logger";
 
 export const runtime = "nodejs";
@@ -90,6 +90,91 @@ async function persistCallContext(
     event_id: eventId,
     state_result: responseData,
   };
+}
+
+async function appendPropertyStateNote(
+  origin: string,
+  propertyId: string,
+  state: Record<string, unknown>
+) {
+  const readTask = {
+    operation: "read_state_record",
+    tab: "properties",
+    key_field: "property_id",
+    key_value: propertyId,
+  };
+
+  const readResponse = await fetch(
+    `${origin}/agenticorg/state-worker`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        task: JSON.stringify(readTask),
+      }),
+      cache: "no-store",
+    }
+  );
+
+  const readData = await readResponse.json();
+
+  if (
+    !readResponse.ok ||
+    readData?.success !== true ||
+    !readData?.record
+  ) {
+    throw new Error(
+      "Could not read property before persisting continuity state"
+    );
+  }
+
+  const existingNotes = String(
+    readData.record.notes ?? ""
+  ).trim();
+
+  const marker =
+    `[CHAABI_STATE] ${JSON.stringify(state)}`;
+
+  const notes = existingNotes
+    ? `${existingNotes}\n${marker}`
+    : marker;
+
+  const updateTask = {
+    operation: "upsert_state_record",
+    tab: "properties",
+    key_field: "property_id",
+    key_value: propertyId,
+    fields: {
+      notes,
+    },
+  };
+
+  const updateResponse = await fetch(
+    `${origin}/agenticorg/state-worker`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        task: JSON.stringify(updateTask),
+      }),
+      cache: "no-store",
+    }
+  );
+
+  const updateData = await updateResponse.json();
+
+  if (
+    !updateResponse.ok ||
+    updateData?.success !== true
+  ) {
+    throw new Error(
+      "Could not persist property continuity state"
+    );
+  }
 }
 
 export async function POST(request: Request) {
@@ -251,6 +336,33 @@ export async function POST(request: Request) {
         { status: gnaniResponse.status }
       );
     }
+
+    if (property_id) {
+  const origin =
+    new URL(request.url).origin;
+
+  after(async () => {
+    try {
+      await appendPropertyStateNote(
+        origin,
+        property_id,
+        {
+          kind: "broker_call",
+          tracking_id: trackingId,
+          status: "STARTED",
+          broker_name: name ?? "Broker",
+          timestamp:
+            new Date().toISOString(),
+        }
+      );
+    } catch (error) {
+      console.error(
+        "Failed to persist broker tracking state:",
+        error
+      );
+    }
+  });
+}
 
     return NextResponse.json({
       success: true,
