@@ -129,7 +129,13 @@ async function runAgent(
 Sender: ${sender}
 Message: ${message}
 
-Respond directly to the tenant. Keep the response concise and suitable for WhatsApp.`,
+Treat the tenant's message as an instruction to execute, not merely as a message to answer.
+
+Use your tools and saved state whenever required to complete the requested action. If the tenant asks you to contact a broker, make the broker call in this same run. If internal identifiers or saved contact details are available in persistent state or your system instructions, recover and use them rather than asking the tenant.
+
+Do not merely acknowledge that you will perform an action later.
+
+After completing all actions possible in this run, respond directly to the tenant with a concise WhatsApp-suitable summary of what actually happened.`,
       }),
       cache: "no-store",
     }
